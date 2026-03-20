@@ -1,0 +1,156 @@
+// This is your Prisma schema file
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// A business that signs up on the platform
+model Business {
+  id               String    @id @default(uuid())
+  name             String
+  email            String    @unique
+  passwordHash     String
+  logoUrl          String?
+  description      String?
+  whatsappNumber   String?   @unique  // e.g. +91XXXXXXXXXX
+  whatsappVerified Boolean   @default(false)
+  isActive         Boolean   @default(true)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  products         Product[]
+  faqs             Faq[]
+  orders           Order[]
+  sessions         ChatSession[]
+  categories       Category[]
+
+  @@map("businesses")
+}
+
+model Category {
+  id         String    @id @default(uuid())
+  businessId String
+  name       String
+  sortOrder  Int       @default(0)
+  createdAt  DateTime  @default(now())
+
+  business   Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  products   Product[]
+
+  @@map("categories")
+}
+
+model Product {
+  id          String    @id @default(uuid())
+  businessId  String
+  categoryId  String?
+  name        String
+  description String?
+  price       Float
+  imageUrl    String?
+  isAvailable Boolean   @default(true)
+  tags        String[]  // e.g. ["rice-based", "spicy", "white", "veg"]
+  sortOrder   Int       @default(0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  business    Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  category    Category? @relation(fields: [categoryId], references: [id])
+  orderItems  OrderItem[]
+
+  @@map("products")
+}
+
+model Faq {
+  id         String   @id @default(uuid())
+  businessId String
+  question   String
+  answer     String
+  sortOrder  Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  business   Business @relation(fields: [businessId], references: [id], onDelete: Cascade)
+
+  @@map("faqs")
+}
+
+// A WhatsApp conversation session per customer per business
+model ChatSession {
+  id           String    @id @default(uuid())
+  businessId   String
+  customerPhone String   // WhatsApp phone number of the customer
+  cartData     Json?     // { items: [{productId, name, qty, price}], total: number }
+  lastMessageAt DateTime @default(now())
+  createdAt    DateTime  @default(now())
+
+  business     Business  @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  messages     ChatMessage[]
+  orders       Order[]
+
+  @@unique([businessId, customerPhone])
+  @@map("chat_sessions")
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  sessionId String
+  role      String   // "user" | "assistant"
+  content   String
+  createdAt DateTime @default(now())
+
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("chat_messages")
+}
+
+model Order {
+  id              String      @id @default(uuid())
+  businessId      String
+  sessionId       String?
+  customerPhone   String
+  customerName    String?
+  status          OrderStatus @default(PENDING)
+  totalAmount     Float
+  razorpayOrderId String?     @unique
+  razorpayPaymentId String?
+  paymentLinkUrl  String?
+  paidAt          DateTime?
+  notes           String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  business        Business    @relation(fields: [businessId], references: [id], onDelete: Cascade)
+  session         ChatSession? @relation(fields: [sessionId], references: [id])
+  items           OrderItem[]
+
+  @@map("orders")
+}
+
+model OrderItem {
+  id        String  @id @default(uuid())
+  orderId   String
+  productId String
+  name      String  // snapshot at time of order
+  price     Float   // snapshot at time of order
+  quantity  Int
+
+  order     Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+
+  @@map("order_items")
+}
+
+enum OrderStatus {
+  PENDING
+  PAYMENT_LINK_SENT
+  PAID
+  PROCESSING
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}

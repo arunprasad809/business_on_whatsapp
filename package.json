@@ -1,0 +1,15 @@
+{
+  "name": "business_on_whatsapp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI-powered WhatsApp commerce platform",
+  "scripts": {
+    "dev": "concurrently \"npm run dev --prefix backend\" \"npm run dev --prefix admin-panel\"",
+    "install:all": "npm install && npm install --prefix backend && npm install --prefix admin-panel",
+    "build": "npm run build --prefix backend && npm run build --prefix admin-panel",
+    "lint": "npm run lint --prefix backend && npm run lint --prefix admin-panel"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
