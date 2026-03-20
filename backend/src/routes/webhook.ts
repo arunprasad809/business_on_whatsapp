@@ -28,7 +28,12 @@ webhookRouter.post('/whatsapp/:businessId', async (req: Request, res: Response) 
     const { businessId } = req.params
     const body = req.body
 
-    if (body.object !== 'whatsapp_business_account') return
+    console.log('[Webhook] Received:', JSON.stringify(body).substring(0, 200))
+
+    if (body.object !== 'whatsapp_business_account') {
+      console.log('[Webhook] Not a WhatsApp event, skipping')
+      return
+    }
 
     for (const entry of body.entry ?? []) {
       for (const change of entry.changes ?? []) {
@@ -37,50 +42,36 @@ webhookRouter.post('/whatsapp/:businessId', async (req: Request, res: Response) 
         const messages = change.value?.messages ?? []
         const phoneNumberId = change.value?.metadata?.phone_number_id
 
+        console.log('[Webhook] Messages:', messages.length, 'PhoneNumberId:', phoneNumberId)
+
         const business = await prisma.business.findFirst({
           where: { id: businessId, isActive: true },
         })
+
+        console.log('[Webhook] Business found:', business?.name ?? 'NOT FOUND')
+
         if (!business) continue
 
         for (const message of messages) {
-          if (message.type !== 'text') {
-            // Handle button replies
-            if (message.type === 'interactive' && message.interactive?.type === 'button_reply') {
-              const buttonId = message.interactive.button_reply.id
-              const from = message.from
-              if (buttonId === 'confirm_order') {
-                await handleOrderConfirmation(businessId, from, phoneNumberId, business.whatsappNumber ?? '')
-              }
-              continue
-            }
-            continue
-          }
+          console.log('[Webhook] Processing message type:', message.type, 'from:', message.from)
+
+          if (message.type !== 'text') continue
 
           const from: string = message.from
           const text: string = message.text.body
 
+          console.log('[Webhook] Calling AI for:', text)
+
           const { reply, orderReady, updatedCart } = await getAIResponse(businessId, from, text)
 
-          if (orderReady && updatedCart && updatedCart.length > 0) {
-            // Generate payment link
-            const { paymentLink } = await createPaymentLink(businessId, from, updatedCart)
+          console.log('[Webhook] AI replied:', reply.substring(0, 100))
 
-            const paymentMessage = `${reply}\n\n💳 Tap below to complete your payment:\n${paymentLink}\n\nYour order will be confirmed once payment is done. ✅`
-
-            await sendWhatsAppMessage(
-              phoneNumberId,
-              process.env.META_WHATSAPP_TOKEN!,
-              from,
-              paymentMessage
-            )
-          } else {
-            await sendWhatsAppMessage(
-              phoneNumberId,
-              process.env.META_WHATSAPP_TOKEN!,
-              from,
-              reply
-            )
-          }
+          await sendWhatsAppMessage(
+            phoneNumberId,
+            process.env.META_WHATSAPP_TOKEN!,
+            from,
+            reply
+          )
         }
       }
     }
