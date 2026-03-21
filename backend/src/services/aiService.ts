@@ -78,12 +78,11 @@ export async function getAIResponse(
   }
 
   const systemPrompt = `You are a friendly AI assistant for "${business.name}", a business on WhatsApp.
-  CURRENT CART: ${clearIntent ? '[] (cart was just cleared by customer)' : JSON.stringify(currentCart)}
 ${business.description ? `About the business: ${business.description}` : ''}
 
 STRICT RULES — follow these exactly:
 1. Only show products from the catalog below. Never invent items.
-2. NEVER use markdown. No **, no __, no #, no bullet points with -. 
+2. NEVER use markdown. No **, no __, no #, no bullet points with -.
    Use plain text only. For lists use numbers: "1. Item - Price"
    WhatsApp does not render markdown — it will show as raw symbols.
 3. Use simple formatting — just plain text and emojis.
@@ -92,13 +91,13 @@ STRICT RULES — follow these exactly:
 6. When customer confirms the final order, summarise it clearly and end with ORDER_READY on its own line.
 7. ORDER_READY must appear alone on the last line — never mid-sentence.
 
-CART MANAGEMENT:
-- Current cart: ${JSON.stringify(currentCart)}
-- When customer says "cancel X" or "remove X" — remove only that item from cart
-- When customer says "add X" or "I want X" — add only that item
-- When customer says "2 biryanis" — they mean 2 of the biryani, not other items
-- Never re-add items the customer cancelled
-- Always show the updated cart after any change
+CART TRACKING (CRITICAL):
+Current cart: ${clearIntent ? '[]' : JSON.stringify(currentCart)}
+- After EVERY message where the cart changes (add, remove, update, clear), you MUST output a hidden line at the very end:
+  CART_JSON:{"items":[{"productId":"<id>","name":"<name>","price":<price>,"quantity":<qty>}],"total":<total>}
+- Use the exact productId from the catalog. Do not invent IDs.
+- If cart is empty after a clear, output: CART_JSON:{"items":[],"total":0}
+- This line is hidden from the customer. Always include it when cart changes.
 
 PRODUCT CATALOG:
 ${catalogText || 'No products added yet.'}
@@ -108,16 +107,17 @@ ${faqText || 'No FAQs added yet.'}
 
 ORDER FLOW:
 1. Customer browses → show menu/filter products
-2. Customer orders → update cart, confirm items
-3. Customer confirms → summarise and write ORDER_READY on last line
+2. Customer orders → update cart, confirm items added, output CART_JSON
+3. Customer confirms → summarise, write ORDER_READY on last line, output CART_JSON
 4. Never add ORDER_READY unless customer explicitly confirms the order
 
-EXAMPLE of correct order confirmation:
+EXAMPLE of correct order confirmation reply:
 "Here is your order:
-- 2x Chicken Biryani - Rs.360
+1. 2x Chicken Biryani - Rs.360
 Total: Rs.360
-Generating your payment link now!
-ORDER_READY"
+Generating your payment link now! 💳
+ORDER_READY
+CART_JSON:{"items":[{"productId":"abc123","name":"Chicken Biryani","price":180,"quantity":2}],"total":360}"
 `
 
   // Build message history
@@ -142,14 +142,36 @@ ORDER_READY"
     .join('')
 
   const orderReady = replyText.includes('ORDER_READY')
-  const cleanReply = stripMarkdown(replyText.replace('ORDER_READY', '').trim())
 
-  // Persist messages and session
-  await upsertSessionAndMessages(businessId, customerPhone, userMessage, cleanReply, currentCart)
+  // Extract hidden CART_JSON block from AI reply to get the real updated cart
+  let parsedCart: CartItem[] = currentCart
+  const cartJsonMatch = replyText.match(/CART_JSON:(\{.*?\})(?:\s|$)/s)
+  if (cartJsonMatch) {
+    try {
+      const parsed = JSON.parse(cartJsonMatch[1])
+      if (Array.isArray(parsed.items)) {
+        parsedCart = parsed.items
+        console.log('[AI] Parsed cart from AI reply:', JSON.stringify(parsedCart))
+      }
+    } catch {
+      console.warn('[AI] Failed to parse CART_JSON from reply')
+    }
+  }
+
+  // Strip ORDER_READY and CART_JSON from the reply shown to customer
+  const cleanReply = stripMarkdown(
+    replyText
+      .replace(/ORDER_READY/g, '')
+      .replace(/CART_JSON:\{.*?\}/s, '')
+      .trim()
+  )
+
+  // Persist messages and session with the AI-tracked cart
+  await upsertSessionAndMessages(businessId, customerPhone, userMessage, cleanReply, parsedCart)
 
   return {
     reply: cleanReply,
-    updatedCart: currentCart,
+    updatedCart: parsedCart,
     orderReady,
   }
 }
