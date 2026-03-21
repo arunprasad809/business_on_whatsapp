@@ -63,14 +63,24 @@ export async function getAIResponse(
   const systemPrompt = `You are a friendly AI assistant for "${business.name}", a business on WhatsApp.
 ${business.description ? `About the business: ${business.description}` : ''}
 
-Your job:
-1. Help customers browse products, answer questions, and place orders — all via WhatsApp chat.
-2. Be warm, concise, and helpful. Use simple formatting (no markdown bold, no headers).
-3. When showing products, list them clearly with name and price.
-4. Filter products intelligently when asked (e.g. "rice-based", "white coloured", "under 200", "vegetarian").
-5. When a customer wants to order, confirm their items and ask for their name if not known.
-6. Once confirmed, end your reply with the exact token: ORDER_READY — this triggers payment link generation.
-7. Never make up products. Only show what's in the catalog below.
+STRICT RULES — follow these exactly:
+1. Only show products from the catalog below. Never invent items.
+2. NEVER use markdown. No **, no __, no #, no bullet points with -. 
+   Use plain text only. For lists use numbers: "1. Item - Price"
+   WhatsApp does not render markdown — it will show as raw symbols.
+3. Use simple formatting — just plain text and emojis.
+4. When customer wants to order, ask for their name first if not known.
+5. Maintain the cart accurately — add, remove, update items as customer requests.
+6. When customer confirms the final order, summarise it clearly and end with ORDER_READY on its own line.
+7. ORDER_READY must appear alone on the last line — never mid-sentence.
+
+CART MANAGEMENT:
+- Current cart: ${JSON.stringify(currentCart)}
+- When customer says "cancel X" or "remove X" — remove only that item from cart
+- When customer says "add X" or "I want X" — add only that item
+- When customer says "2 biryanis" — they mean 2 of the biryani, not other items
+- Never re-add items the customer cancelled
+- Always show the updated cart after any change
 
 PRODUCT CATALOG:
 ${catalogText || 'No products added yet.'}
@@ -78,15 +88,19 @@ ${catalogText || 'No products added yet.'}
 FAQs:
 ${faqText || 'No FAQs added yet.'}
 
-CURRENT CART: ${JSON.stringify(currentCart)}
+ORDER FLOW:
+1. Customer browses → show menu/filter products
+2. Customer orders → update cart, confirm items
+3. Customer confirms → summarise and write ORDER_READY on last line
+4. Never add ORDER_READY unless customer explicitly confirms the order
 
-IMPORTANT RULES:
-- Keep replies short and WhatsApp-friendly (no markdown).
-- When filtering by colour/type/diet, match against product name, description, and tags.
-- If customer says "order", "buy", "I want", "add to cart" — update their cart and confirm.
-- If customer says "show cart" or "my order" — summarise cart items and total.
-- If cart is confirmed and customer says "place order", "confirm", "yes proceed" — say the order summary and end with ORDER_READY.
-- Be conversational. Never output JSON or technical info to the customer.`
+EXAMPLE of correct order confirmation:
+"Here is your order:
+- 2x Chicken Biryani - Rs.360
+Total: Rs.360
+Generating your payment link now!
+ORDER_READY"
+`
 
   // Build message history
   const history = (session?.messages ?? []).map(m => ({
@@ -110,7 +124,7 @@ IMPORTANT RULES:
     .join('')
 
   const orderReady = replyText.includes('ORDER_READY')
-  const cleanReply = replyText.replace('ORDER_READY', '').trim()
+  const cleanReply = stripMarkdown(replyText.replace('ORDER_READY', '').trim())
 
   // Persist messages and session
   await upsertSessionAndMessages(businessId, customerPhone, userMessage, cleanReply, currentCart)
@@ -122,6 +136,16 @@ IMPORTANT RULES:
   }
 }
 
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove **bold**
+    .replace(/\*(.*?)\*/g, '$1')       // Remove *italic*
+    .replace(/__(.*?)__/g, '$1')       // Remove __bold__
+    .replace(/#+\s/g, '')              // Remove # headers
+    .replace(/^\s*[-*]\s/gm, '• ')    // Convert - bullets to •
+    .trim()
+}
+
 async function upsertSessionAndMessages(
   businessId: string,
   customerPhone: string,
@@ -129,18 +153,26 @@ async function upsertSessionAndMessages(
   assistantReply: string,
   cart: CartItem[]
 ) {
-  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  // Detect if AI cleared the cart
+  const cartCleared =
+    userMessage.toLowerCase().includes('clear') ||
+    userMessage.toLowerCase().includes('cancel all') ||
+    userMessage.toLowerCase().includes('start over') ||
+    assistantReply.toLowerCase().includes('cart is now empty')
+
+  const finalCart = cartCleared ? [] : cart
+  const total = finalCart.reduce((sum, item) => sum + item.price * item.quantity, 0)
 
   const session = await prisma.chatSession.upsert({
     where: { businessId_customerPhone: { businessId, customerPhone } },
     create: {
       businessId,
       customerPhone,
-      cartData: { items: cart, total },
+      cartData: { items: finalCart, total },
       lastMessageAt: new Date(),
     },
     update: {
-      cartData: { items: cart, total },
+      cartData: { items: finalCart, total },
       lastMessageAt: new Date(),
     },
   })

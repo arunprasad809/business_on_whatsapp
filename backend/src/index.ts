@@ -33,6 +33,7 @@ app.use(cors({
 app.use('/api/webhook/razorpay', express.raw({ type: 'application/json' }))
 
 app.use(express.json())
+app.use(express.urlencoded({ extended: true })) // Required for Twilio form data
 
 // Rate limiting
 const limiter = rateLimit({
