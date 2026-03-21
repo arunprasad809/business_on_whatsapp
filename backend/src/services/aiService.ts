@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import { Prisma } from '@prisma/client'
 import { prisma } from '../config/prisma'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
@@ -20,6 +21,9 @@ export async function getAIResponse(
   customerPhone: string,
   userMessage: string
 ): Promise<{ reply: string; updatedCart?: CartItem[]; orderReady?: boolean }> {
+
+  // ─── Detect cart clear BEFORE calling AI ─────────────────────────
+  const clearIntent = /\b(clear|reset|cancel all|start over|empty cart|remove all)\b/i.test(userMessage)
 
   // Load business data for context
   const [business, products, faqs, session] = await Promise.all([
@@ -58,9 +62,23 @@ export async function getAIResponse(
 
   // Parse current cart from session
   const cartData = (session?.cartData as any) ?? { items: [], total: 0 }
-  const currentCart: CartItem[] = cartData.items ?? []
+  let currentCart: CartItem[] = cartData.items ?? []
+
+  // Clear cart AND message history immediately if intent detected
+  if (clearIntent) {
+    currentCart = []
+    // Persist the cleared cart right away
+    const clearedSession = await prisma.chatSession.upsert({
+      where: { businessId_customerPhone: { businessId, customerPhone } },
+      create: { businessId, customerPhone, cartData: { items: [], total: 0 }, lastMessageAt: new Date() },
+      update: { cartData: { items: [], total: 0 }, lastMessageAt: new Date() },
+    })
+    // Also wipe message history so AI doesn't "remember" old cart from conversation context
+    await prisma.chatMessage.deleteMany({ where: { sessionId: clearedSession.id } })
+  }
 
   const systemPrompt = `You are a friendly AI assistant for "${business.name}", a business on WhatsApp.
+  CURRENT CART: ${clearIntent ? '[] (cart was just cleared by customer)' : JSON.stringify(currentCart)}
 ${business.description ? `About the business: ${business.description}` : ''}
 
 STRICT RULES — follow these exactly:
@@ -153,26 +171,18 @@ async function upsertSessionAndMessages(
   assistantReply: string,
   cart: CartItem[]
 ) {
-  // Detect if AI cleared the cart
-  const cartCleared =
-    userMessage.toLowerCase().includes('clear') ||
-    userMessage.toLowerCase().includes('cancel all') ||
-    userMessage.toLowerCase().includes('start over') ||
-    assistantReply.toLowerCase().includes('cart is now empty')
-
-  const finalCart = cartCleared ? [] : cart
-  const total = finalCart.reduce((sum, item) => sum + item.price * item.quantity, 0)
+  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0)
 
   const session = await prisma.chatSession.upsert({
     where: { businessId_customerPhone: { businessId, customerPhone } },
     create: {
       businessId,
       customerPhone,
-      cartData: { items: finalCart, total },
+      cartData: { items: cart, total } as unknown as Prisma.InputJsonValue,
       lastMessageAt: new Date(),
     },
     update: {
-      cartData: { items: finalCart, total },
+      cartData: { items: cart, total } as unknown as Prisma.InputJsonValue,
       lastMessageAt: new Date(),
     },
   })
